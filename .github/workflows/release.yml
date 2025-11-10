@@ -1,0 +1,202 @@
+name: Release Plugin
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build-all:
+    name: Build ${{ matrix.platform }} Plugin
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-22.04
+            artifact: linux.so
+            
+          - platform: windows
+            os: windows-2022
+            artifact: windows.dll
+            
+          - platform: macos
+            os: macos-13
+            artifact: macos.dylib
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies (Linux)
+      if: matrix.platform == 'linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential
+        
+    - name: Install dependencies (macOS)
+      if: matrix.platform == 'macos'
+      run: brew install cmake
+      
+    - name: Setup MSVC (Windows)
+      if: matrix.platform == 'windows'
+      uses: microsoft/setup-msbuild@v2
+      
+    - name: Configure CMake (Universal Binary for macOS)
+      if: matrix.platform == 'macos'
+      run: |
+        mkdir -p build
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+              ..
+        
+    - name: Configure CMake (Linux/Windows)
+      if: matrix.platform != 'macos'
+      run: |
+        mkdir -p build
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=Release ..
+        
+    - name: Build Plugin
+      run: cmake --build build --config Release
+      
+    - name: Copy Windows DLL to root (Windows only)
+      if: matrix.platform == 'windows'
+      shell: pwsh
+      run: |
+        if (Test-Path "build\Release\windows.dll") {
+          Copy-Item "build\Release\windows.dll" "build\windows.dll"
+        }
+        
+    - name: Verify Plugin
+      if: matrix.platform == 'linux'
+      run: |
+        ls -lh build/${{ matrix.artifact }}
+        file build/${{ matrix.artifact }}
+        
+    - name: Verify Plugin (macOS)
+      if: matrix.platform == 'macos'
+      run: |
+        ls -lh build/${{ matrix.artifact }}
+        file build/${{ matrix.artifact }}
+        lipo -info build/${{ matrix.artifact }}
+        
+    - name: Verify Plugin (Windows)
+      if: matrix.platform == 'windows'
+      shell: pwsh
+      run: |
+        Get-Item "build\${{ matrix.artifact }}" | Format-List
+        
+    - name: Generate SHA256 Checksum
+      id: checksum
+      shell: bash
+      run: |
+        cd build
+        if [ "${{ matrix.platform }}" == "windows" ]; then
+          sha256sum ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
+        else
+          shasum -a 256 ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
+        fi
+        echo "checksum=$(cat ${{ matrix.artifact }}.sha256 | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+        cat ${{ matrix.artifact }}.sha256
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: plugin-${{ matrix.platform }}
+        path: |
+          build/${{ matrix.artifact }}
+          build/${{ matrix.artifact }}.sha256
+        retention-days: 90
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-all
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        
+    - name: Display structure
+      run: |
+        echo "Artifact structure:"
+        ls -R artifacts/
+        
+    - name: Prepare release files
+      run: |
+        mkdir -p release
+        cp artifacts/plugin-linux/linux.so release/
+        cp artifacts/plugin-linux/linux.so.sha256 release/
+        cp artifacts/plugin-windows/windows.dll release/
+        cp artifacts/plugin-windows/windows.dll.sha256 release/
+        cp artifacts/plugin-macos/macos.dylib release/
+        cp artifacts/plugin-macos/macos.dylib.sha256 release/
+        
+    - name: Create combined checksums file
+      run: |
+        cd release
+        cat linux.so.sha256 > checksums.txt
+        cat windows.dll.sha256 >> checksums.txt
+        cat macos.dylib.sha256 >> checksums.txt
+        echo "Combined checksums:"
+        cat checksums.txt
+        
+    - name: Get version from tag
+      id: get_version
+      run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release/linux.so
+          release/windows.dll
+          release/macos.dylib
+          release/checksums.txt
+          release/*.sha256
+        body: |
+          # Plugin Template Release ${{ steps.get_version.outputs.version }}
+          
+          This release includes pre-built plugin binaries for all platforms:
+          
+          ## Binaries
+          - **linux.so** - Linux plugin (x86_64)
+          - **windows.dll** - Windows plugin (x64)
+          - **macos.dylib** - macOS plugin (Universal Binary: Intel + Apple Silicon)
+          
+          ## Verification
+          
+          All binaries include SHA256 checksums for verification. See `checksums.txt` or individual `.sha256` files.
+          
+          ## What's Included
+          - Cross-platform plugin binaries
+          - SHA256 checksums for security verification
+          - Ready to use with whatsmycli
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Release Summary
+      run: |
+        echo "==================================="
+        echo "Release ${{ steps.get_version.outputs.version }} Created!"
+        echo "==================================="
+        echo ""
+        echo "Binaries included:"
+        ls -lh release/
+        echo ""
+        echo "Release is now live on GitHub!"
+

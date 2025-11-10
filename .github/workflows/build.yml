@@ -1,0 +1,162 @@
+name: Build Plugin for All Platforms
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Build Linux Plugin
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential
+        
+    - name: Configure CMake
+      run: |
+        mkdir -p build
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=Release ..
+        
+    - name: Build Plugin
+      run: cmake --build build --config Release -j$(nproc)
+      
+    - name: Verify Plugin
+      run: |
+        echo "Verifying linux.so..."
+        ls -lh build/linux.so
+        file build/linux.so
+        
+    - name: Upload Linux Plugin
+      uses: actions/upload-artifact@v4
+      with:
+        name: plugin-linux
+        path: build/linux.so
+        retention-days: 90
+
+  build-windows:
+    name: Build Windows Plugin
+    runs-on: windows-2022
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup MSVC
+      uses: microsoft/setup-msbuild@v2
+      
+    - name: Configure CMake
+      run: |
+        mkdir build
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=Release ..
+        
+    - name: Build Plugin
+      run: cmake --build build --config Release
+      
+    - name: Find and Display Plugin
+      run: |
+        Write-Host "Looking for windows.dll..."
+        Get-ChildItem -Path build -Recurse -Filter "windows.dll" | ForEach-Object {
+          Write-Host "Found: $($_.FullName)"
+          Write-Host "Size: $($_.Length) bytes"
+        }
+        
+    - name: Copy Plugin to Root
+      run: |
+        if (Test-Path "build\Release\windows.dll") {
+          Copy-Item "build\Release\windows.dll" "build\windows.dll"
+        } elseif (Test-Path "build\windows.dll") {
+          Write-Host "Plugin already in build directory"
+        } else {
+          Write-Error "windows.dll not found!"
+          exit 1
+        }
+        
+    - name: Verify Plugin
+      run: |
+        if (Test-Path "build\windows.dll") {
+          Write-Host "Plugin verified:"
+          Get-Item "build\windows.dll" | Format-List
+        } else {
+          Write-Error "windows.dll not found after copy!"
+          exit 1
+        }
+        
+    - name: Upload Windows Plugin
+      uses: actions/upload-artifact@v4
+      with:
+        name: plugin-windows
+        path: build/windows.dll
+        retention-days: 90
+
+  build-macos:
+    name: Build macOS Plugin (Universal Binary)
+    runs-on: macos-13
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: brew install cmake
+      
+    - name: Configure CMake (Universal Binary)
+      run: |
+        mkdir -p build
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+              ..
+        
+    - name: Build Plugin
+      run: cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+      
+    - name: Verify Universal Binary
+      run: |
+        echo "Verifying macos.dylib..."
+        ls -lh build/macos.dylib
+        file build/macos.dylib
+        lipo -info build/macos.dylib
+        
+    - name: Upload macOS Plugin
+      uses: actions/upload-artifact@v4
+      with:
+        name: plugin-macos
+        path: build/macos.dylib
+        retention-days: 90
+
+  summary:
+    name: Build Summary
+    runs-on: ubuntu-22.04
+    needs: [build-linux, build-windows, build-macos]
+    if: always()
+    
+    steps:
+    - name: Summary
+      run: |
+        echo "==================================="
+        echo "Plugin Build Summary"
+        echo "==================================="
+        echo ""
+        echo "Build Results:"
+        echo "  - Linux Plugin:   ${{ needs.build-linux.result }}"
+        echo "  - Windows Plugin: ${{ needs.build-windows.result }}"
+        echo "  - macOS Plugin:   ${{ needs.build-macos.result }}"
+        echo ""
+        echo "All platform plugins have been built!"
+        echo ""
+        echo "Download artifacts from the Actions tab to get:"
+        echo "  - linux.so (Linux)"
+        echo "  - windows.dll (Windows)"
+        echo "  - macos.dylib (macOS Universal Binary)"
+
