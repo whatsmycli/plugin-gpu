@@ -266,9 +266,9 @@ std::vector<GPUInfo> detect_gpus_macos() {
 std::vector<GPUInfo> detect_gpus() {
 #ifdef PLATFORM_LINUX
     return detect_gpus_linux();
-#elif PLATFORM_WINDOWS
+#elif defined(PLATFORM_WINDOWS)
     return detect_gpus_windows();
-#elif PLATFORM_MACOS
+#elif defined(PLATFORM_MACOS)
     return detect_gpus_macos();
 #else
     return {};
